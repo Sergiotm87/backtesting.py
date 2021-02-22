@@ -350,6 +350,16 @@ class Position:
         for trade in self.__broker.trades:
             trade.close(portion)
 
+    def close_tag(self, portion: float = 1., tag: object = None):
+        """
+        Execute `Position.close` for active trade with a specific tag.
+        """
+        if tag is not None:
+            for trade in [x for x in self.__broker.trades if x.tag == tag]:
+                trade.close(portion)
+        else:
+            self.close(portion)
+
     def __repr__(self):
         return f'<Position: {self.size} ({len(self.__broker.trades)} trades)>'
 
