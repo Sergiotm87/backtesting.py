@@ -21,6 +21,8 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple, Type, Union
 import numpy as np
 import pandas as pd
 
+from itertools import cycle
+
 try:
     from tqdm.auto import tqdm as _tqdm
     _tqdm = partial(_tqdm, leave=False)
@@ -48,10 +50,11 @@ class Strategy(metaclass=ABCMeta):
     your own strategy.
     """
 
-    def __init__(self, broker, data, params):
+    def __init__(self, broker, data, patterns, params):
         self._indicators = []
         self._broker: _Broker = broker
         self._data: _Data = data
+        self._patterns: List[Pattern] = patterns
         self._params = self._check_params(params)
 
     def __repr__(self):
@@ -1007,6 +1010,103 @@ class _Broker:
         if sl:
             trade.sl = sl
 
+class Pattern:
+    def __init__(self, pattern):
+
+        for key in pattern:
+            setattr(self, key, pattern[key])
+
+        self._objetive = self.get_next_objetive()
+        self._stop = self.get_next_stop()
+        # [TODO] averiguar como llamar a strategy.buy() o strategy.sell()
+        #self.open_order = "buy" if self.sentiment == 'bullish' else "sell" # bullish=buy, bearish=sell
+        #self.close_order = "sell" if self.sentiment == 'bullish' else "buy" # opposite of open_order
+
+        self.fibs = {
+            'fib05': 0.5,
+            'fib0618': 0.5,
+            'fib1': 1,
+        } # position % to close for every fib
+
+        self.fibs_licycle = cycle(list(self.fibs.keys())) # to get next fib
+
+        self.stop_line = None
+
+    def next_fib(self):
+        newfib = next(self.fibs_licycle)
+        return newfib
+
+    def enter_ope(self, cls, **kwargs):
+
+        if self.sentiment == 'bearish':
+            return cls.sell(**kwargs)
+        elif self.sentiment == 'bullish':
+            return cls.buy(**kwargs)
+
+    def stop_hit(self, cls):
+
+        if self.sentiment == 'bearish':
+            return cls.data.High[-1] > self._stop
+        elif self.sentiment == 'bullish':
+            return cls.data.Low[-1] < self._stop
+        else:
+            raise ValueError
+
+    def objetive_hit(self, cls):
+
+        if self.sentiment == 'bearish':
+            return cls.data.Low[-1] < self._objetive
+        elif self.sentiment == 'bullish':
+            return cls.data.High[-1] > self._objetive
+        else:
+            raise ValueError
+
+    @property
+    def objetive(self) -> float:
+        return self._objetive
+
+    @objetive.setter
+    def objetive(self, value) -> float:
+        self._objetive = value
+
+    def get_next_objetive(self):
+
+        if not hasattr(self, '_objetive'):
+            if self.structure == 'ABC':
+                self._objetive = self.pb
+            elif self.structure == 'ABCDE':
+                self._objetive = self.pd
+        elif self.structure == 'ABC' and self.objetive == self.pb:
+            self._objetive = self.fib05
+        elif self.structure == 'ABCDE' and self.objetive  == self.pd:
+            self._objetive = self.fib05
+        elif self.objetive == self.fib05:
+            self._objetive = self.fib0618
+        elif self.objetive == self.fib0618:
+            self._objetive = self.fib1
+
+        return self.objetive
+
+    @property
+    def stop(self) -> float:
+        return self._stop
+
+    @stop.setter
+    def stop(self, value) -> float:
+        self._stop = value
+
+    def get_next_stop(self):
+
+        if not hasattr(self, '_stop'):
+            if self.structure == 'ABC':
+                self._stop = self.pc
+            elif self.structure == 'ABCDE':
+                self._stop = self.pe
+        # [TODO] añadir stop dinamico
+        #elif self.stop in [self.pc,self.pe]
+        #        return self.pe
+
+        return self._stop
 
 class Backtest:
     """
@@ -1022,6 +1122,7 @@ class Backtest:
     def __init__(self,
                  data: pd.DataFrame,
                  strategy: Type[Strategy],
+                 patterns: List = None,
                  *,
                  cash: float = 10_000,
                  commission: float = .0,
@@ -1132,6 +1233,8 @@ class Backtest:
         self._strategy = strategy
         self._results = None
 
+        self._patterns = patterns
+
     def run(self, **kwargs) -> pd.Series:
         """
         Run the backtest. Returns `pd.Series` with results and statistics.
@@ -1173,7 +1276,10 @@ class Backtest:
         """
         data = _Data(self._data.copy(deep=False))
         broker: _Broker = self._broker(data=data)
-        strategy: Strategy = self._strategy(broker, data, kwargs)
+
+        patterns = [ Pattern(x) for x in self._patterns ]
+
+        strategy: Strategy = self._strategy(broker, data, patterns, kwargs)
 
         strategy.init()
         data._update()  # Strategy.init might have changed/added to data.df
